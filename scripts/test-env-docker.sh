@@ -31,7 +31,7 @@ run_tests(){
   local base="http://127.0.0.1:$port"
   local cookie_jar project_json public_id edit_url token patch_json editor_json place_id photo_json public_json unauthorized health
   cookie_jar=$(mktemp)
-  trap 'rm -f "$cookie_jar"' EXIT
+  trap "rm -f '$cookie_jar'" EXIT
 
   health=$(curl -fsS "$base/api/health")
   [[ "$health" == *'"database":"mysql"'* ]]
