@@ -50,8 +50,9 @@ function utcNow(): string
 function toUtc(string $datetime, string $timezone): string
 {
     try {
-        $dt = new DateTimeImmutable($datetime, new DateTimeZone($timezone));
-    } catch (Throwable $e) {
+        $tz = new DateTimeZone($timezone);
+        $dt = new DateTimeImmutable($datetime, $tz);
+    } catch (Throwable) {
         throw new InvalidArgumentException('Invalid datetime or timezone');
     }
     return $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
@@ -62,6 +63,17 @@ function utcIso(string $mysqlDateTime): string
     return (new DateTimeImmutable($mysqlDateTime, new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z');
 }
 
+function fromUtcForTimezone(string $mysqlDateTime, string $timezone): string
+{
+    try {
+        $tz = new DateTimeZone($timezone);
+    } catch (Throwable) {
+        $tz = new DateTimeZone('UTC');
+    }
+    return (new DateTimeImmutable($mysqlDateTime, new DateTimeZone('UTC')))
+        ->setTimezone($tz)->format(DateTimeInterface::ATOM);
+}
+
 function validateActivityRange(string $startUtc, string $endUtc): void
 {
     $start = new DateTimeImmutable($startUtc, new DateTimeZone('UTC'));
@@ -69,7 +81,7 @@ function validateActivityRange(string $startUtc, string $endUtc): void
     if ($start >= $end) {
         throw new InvalidArgumentException('start_at must be earlier than end_at');
     }
-    $maxHours = (int)envValue('PFN_MAX_ACTIVITY_HOURS', '168');
+    $maxHours = max(1, (int)envValue('PFN_MAX_ACTIVITY_HOURS', '168'));
     if (($end->getTimestamp() - $start->getTimestamp()) > ($maxHours * 3600)) {
         throw new InvalidArgumentException("Activity period exceeds {$maxHours} hours");
     }
@@ -78,13 +90,17 @@ function validateActivityRange(string $startUtc, string $endUtc): void
 function normalizeBbox(mixed $bbox): array
 {
     if (is_string($bbox)) {
-        $bbox = json_decode($bbox, true);
+        try {
+            $bbox = json_decode($bbox, true, 32, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new InvalidArgumentException('bbox is not valid JSON');
+        }
     }
     if (is_array($bbox) && isset($bbox['minLon'], $bbox['minLat'], $bbox['maxLon'], $bbox['maxLat'])) {
         $bbox = [$bbox['minLon'], $bbox['minLat'], $bbox['maxLon'], $bbox['maxLat']];
     }
     if (!is_array($bbox) || count($bbox) !== 4) {
-        throw new InvalidArgumentException('bbox must contain minLon, minLat, maxLon, maxLat');
+        throw new InvalidArgumentException('bbox must contain west, south, east and north');
     }
     $values = [];
     foreach (array_values($bbox) as $value) {
@@ -97,7 +113,7 @@ function normalizeBbox(mixed $bbox): array
     if ($west < -180 || $east > 180 || $south < -90 || $north > 90 || $west >= $east || $south >= $north) {
         throw new InvalidArgumentException('bbox is outside valid coordinate bounds');
     }
-    $maxSpan = (float)envValue('PFN_MAX_BBOX_DEGREES', '1.0');
+    $maxSpan = max(0.01, (float)envValue('PFN_MAX_BBOX_DEGREES', '1.0'));
     if (($east - $west) > $maxSpan || ($north - $south) > $maxSpan) {
         throw new InvalidArgumentException('bbox is too large');
     }
@@ -112,7 +128,7 @@ function readJsonBody(): array
     }
     try {
         $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-    } catch (JsonException $e) {
+    } catch (JsonException) {
         throw new InvalidArgumentException('Invalid JSON body');
     }
     if (!is_array($decoded)) {
@@ -158,6 +174,21 @@ function optionalString(array $data, string $key, int $maxLength = 10000): ?stri
     return $value;
 }
 
+function optionalFloat(array $data, string $key, float $min, float $max): ?float
+{
+    if (!array_key_exists($key, $data) || $data[$key] === null || $data[$key] === '') {
+        return null;
+    }
+    if (!is_numeric($data[$key])) {
+        throw new InvalidArgumentException("{$key} must be numeric");
+    }
+    $value = (float)$data[$key];
+    if ($value < $min || $value > $max) {
+        throw new InvalidArgumentException("{$key} is outside valid bounds");
+    }
+    return $value;
+}
+
 function validatedLicense(string $license): string
 {
     $allowed = ['CC BY 4.0', 'CC BY-SA 4.0', 'CC0 1.0'];
@@ -186,10 +217,62 @@ function validatedHttpUrl(?string $url): ?string
 function normalizeCommonsFile(string $value): string
 {
     $value = trim($value);
+    if ($value === '') {
+        throw new InvalidArgumentException('commons_file is required');
+    }
     $value = preg_replace('/^https?:\/\/commons\.wikimedia\.org\/wiki\//i', '', $value) ?? $value;
     $value = rawurldecode($value);
     if (!str_starts_with(strtolower($value), 'file:')) {
         $value = 'File:' . $value;
     }
     return $value;
+}
+
+function commonsPageUrl(string $commonsFile): string
+{
+    return 'https://commons.wikimedia.org/wiki/' . rawurlencode(str_replace(' ', '_', $commonsFile));
+}
+
+function commonsImageRedirectUrl(string $commonsFile): string
+{
+    $name = preg_replace('/^File:/i', '', $commonsFile) ?? $commonsFile;
+    return 'https://commons.wikimedia.org/wiki/Special:Redirect/file/' . rawurlencode(str_replace(' ', '_', $name));
+}
+
+function isHttpsRequest(): bool
+{
+    if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') {
+        return true;
+    }
+    return strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+}
+
+function cookieOptions(int $maxAge): array
+{
+    return [
+        'expires' => time() + $maxAge,
+        'path' => '/',
+        'secure' => isHttpsRequest(),
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ];
+}
+
+function baseUrl(): string
+{
+    $scheme = isHttpsRequest() ? 'https' : 'http';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+    return $scheme . '://' . $host;
+}
+
+function safeJsonDecode(?string $json, mixed $default = null): mixed
+{
+    if ($json === null || $json === '') {
+        return $default;
+    }
+    try {
+        return json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+    } catch (JsonException) {
+        return $default;
+    }
 }
