@@ -1,9 +1,14 @@
 {
-    "require": {
-        "php": "^8.0"
-    },
-    "autoload": {
-        "files": ["src/Utils.php"]
-    }
+  "name": "k-sakanoshita/place-field-notes",
+  "description": "Document and share local open-data activities around places.",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "ext-pdo": "*",
+    "ext-pdo_mysql": "*",
+    "ext-mbstring": "*",
+    "ext-simplexml": "*",
+    "ext-fileinfo": "*",
+    "ext-gd": "*"
+  }
 }
-
