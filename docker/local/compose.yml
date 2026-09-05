@@ -1,24 +1,50 @@
 services:
-  web:
-    image: php:8.4-cli-bookworm
-    command: ["php", "-S", "0.0.0.0:8080", "-t", "/app", "/app/index.php"]
+  db:
+    image: mysql:8.4
     environment:
-      PLACE_FIELD_NOTES_DB_PATH: /data/place_field_notes_test.sqlite
+      MYSQL_ROOT_PASSWORD: pfn-root-local
+      MYSQL_DATABASE: place_field_notes
+      MYSQL_USER: place_field_notes
+      MYSQL_PASSWORD: pfn-local
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - test-database:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 8s
+
+  web:
+    build:
+      context: ../..
+      dockerfile: docker/local/Dockerfile
+    environment:
+      PFN_DB_HOST: db
+      PFN_DB_PORT: 3306
+      PFN_DB_NAME: place_field_notes
+      PFN_DB_USER: place_field_notes
+      PFN_DB_PASSWORD: pfn-local
+      PFN_UPLOAD_DIR: /data/uploads
+      PFN_MAX_ACTIVITY_HOURS: 168
+      PFN_MAX_BBOX_DEGREES: 1.0
+      PFN_AUTO_MIGRATE: 1
     ports:
       - "127.0.0.1:${PFN_TEST_WEB_PORT:-8082}:8080"
     volumes:
       - ../..:/app:ro
-      - test-database:/data
+      - test-uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
-      test:
-        - CMD
-        - php
-        - -r
-        - "exit(@file_get_contents('http://127.0.0.1:8080/api/health') === false ? 1 : 0);"
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8080/api/health') === false ? 1 : 0);"]
       interval: 2s
       timeout: 3s
       retries: 30
-      start_period: 3s
+      start_period: 4s
 
 volumes:
   test-database:
+  test-uploads:
