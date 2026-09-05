@@ -28,6 +28,7 @@ jobs:
           node --check frontend/public/main.js
           node --check frontend/public/media.js
           node --check frontend/public/enhancements.js
+          node --check frontend/public/place-details.js
           python3 - <<'PY'
           import json
           for path in ('frontend/public/i18n/ja.json', 'frontend/public/i18n/en.json'):
