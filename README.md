@@ -2,195 +2,208 @@
 
 OpenStreetMap や Wikipedia Town などの地域活動の成果を、地図・写真・コメントとともに「まちの記録」として残し、共有するためのWebアプリケーションです。
 
-Place Field Notes is a web application for documenting and sharing the results of local open-data activities such as OpenStreetMap mapping and Wikipedia Town events through maps, photos, and field notes.
+Place Field Notes documents and shares local open-data activities through maps, photos, place results, and field notes.
 
 ## コンセプト
 
-OpenStreetMap の changeset や編集件数そのものではなく、**「その場所で何が調べられ、何が記録され、何が変わったか」**を分かりやすく見せることを目的としています。
+OpenStreetMap の changeset 数や個人の編集件数ではなく、**「その場所で何が調べられ、何が記録され、何が変わったか」**を中心に見せます。
 
-個人のマッピングだけでなく、マッピングパーティー、Wikipedia Town、フィールドワークなど、複数人で行う活動の成果発表にも利用できる設計を目指します。
+個人マッピング、マッピングパーティー、Wikipedia Town、フィールドワークなどを1つの作品形式で扱えます。成果地点（Place Result）には OpenStreetMap / Wikipedia / Wikidata / Wikimedia Commons / 写真 / コメントをまとめて紐付けられます。
 
-## 主な機能（予定）
+## 実装範囲
 
-- 活動場所を地図上の範囲（BBOX）で指定
-- 活動の開始日時・終了日時を記録
-- Overpass API の履歴差分（`adiff`）を利用した OSM 変更内容の取得
-- 過去の PMTiles と活動期間中の差分を重ねた成果マップ
-- 追加・変更・削除された地物の可視化
-- 主な変更点の自動集計
-- Wikipedia / Wikidata / Wikimedia Commons に関連する成果の表示
-- 成果地点ごとに OSM / Wikipedia / Wikidata / Commons をまとめて表示
-- 写真のアップロード
-- Wikimedia Commons の `File:` 名による写真指定
-- 一般URLによる写真・資料の参照
-- 写真のキャプション、作者・クレジット、ライセンス表示
-- 活動記録（Field Notes）の作成
-- 日本語 / English 対応
+GitHub Issues #1〜#4 を基準に実装しています。
 
-## 編集モデル
+### #1 バックエンド基盤・OSM差分
 
-ユーザー登録やログインは設けず、作品ごとに次のURLを発行する想定です。
+- PHP 8.2+ / PDO / MySQL
+- MySQL は `utf8mb4` + InnoDB
+- 閲覧用 `public_id` とランダムな編集トークンを作品ごとに発行
+- 編集トークンは `password_hash()` した値だけをDBへ保存
+- 編集URLのトークンを HttpOnly / SameSite Cookie の編集セッションへ交換
+- BBOX、開始日時、終了日時、IANAタイムゾーンを検証し、DBではUTC保存
+- `OVERPASS_HISTORY_ENDPOINT` で履歴対応 Overpass API を切替可能
+- Overpass QL の `adiff` を使い create / modify / delete を取得
+- Augmented Diff XML を GeoJSON に変換
+- 同一条件の差分を `diff_id` でキャッシュ
+- 作品保存時にプレビュー済み差分を永続化し、公開閲覧時は Overpass を再実行しない
+- 店舗・施設 / 建物 / 出入口 / 道路・通路 / バリアフリー / その他を自動集計
+- `wikipedia=*` / `wikidata=*` / `wikimedia_commons=*` を成果候補として抽出
 
-- **閲覧用URL**: 誰でも閲覧可能な読み取り専用ページ
-- **編集用URL**: 編集トークンを持つ人だけが編集可能
+### #2 フロントエンド・作品作成・公開・再編集
 
-合同イベントでは編集用URLを参加者・運営者間で共有して利用できます。
+- タイトル、説明、活動タイプ、開始/終了日時
+- MapLibre 上で対角2点をクリックしてBBOXを指定
+- **差分確認 → 成果選択 → 作品保存** の順で作成
+- 追加 / 変更 / 削除を色・線種・透明度等で区別
+- 活動開始日以前の利用可能な年次 PMTiles を比較元として選択
+- 比較元PMTilesの日付を公開ページに表示
+- Wikimedia関連候補の掲載チェックと編集者コメント
+- 複数の活動記録（Field Notes）
+- 閲覧用URL / 編集用URL
+- 編集URLから既存作品を再編集
+- 日本語 / English のUIリソース分離
+- モバイル向けレスポンシブ表示
 
-## OSM差分表示
+初期実装では、BBOXと活動日時を保存後に変更しません。変更が必要な場合は新しい作品として作成します。
 
-活動終了後に作品を作成できることを前提としています。
+### #3 写真
 
-1. 活動範囲（BBOX）と開始・終了日時を指定
-2. 履歴対応 Overpass API から `adiff` を取得
-3. GeoJSONへ変換して保存
-4. 活動開始日以前の比較用 PMTiles と重ねて表示
+編集者のみ、次の3方式で写真情報を追加できます。
 
-比較用PMTilesは活動開始時点を厳密に再現するものではないため、公開ページでは利用したスナップショットの日付を明示します。
+1. JPEG / PNG / WebP のローカルアップロード
+2. Wikimedia Commons の `File:` 名
+3. 一般URL
 
-## Wikimediaとの連携
+ローカル画像はPHP GDでWebPへ再エンコードし、公開用画像とサムネイルを生成します。この処理でEXIF等のメタデータは公開画像へ引き継ぎません。元ファイル名は公開パスに使用しません。
 
-OpenStreetMapだけでなく、Wikipedia Town等の成果も同じ作品内で扱えるようにします。
+写真ごとにキャプション、作者 / 撮影者、クレジット、ライセンス、明示的に指定した緯度・経度、活動記録 / 成果地点 / OSM成果候補への関連付け、並び順を保持できます。
 
-1つの成果地点（Place）に、例えば以下をまとめて紐付けられる構造を想定しています。
+ライセンス候補は `CC BY 4.0` / `CC BY-SA 4.0` / `CC0 1.0` のみです。`All rights reserved` は受け付けません。EXIF GPS は自動公開しません。一般URLの画像は自動転載・キャッシュしません。
 
-- OpenStreetMap
-- Wikipedia
-- Wikidata
-- Wikimedia Commons
-- 写真
-- コメント / 活動記録
+### #4 Wikipedia Town等の成果地点
 
-## 写真とライセンス
+作品の活動タイプ:
 
-ローカルアップロードのほか、Wikimedia Commons の File 名や一般URLによる参照に対応する予定です。
+- OpenStreetMap mapping
+- Wikipedia Town
+- OpenStreetMap + Wikipedia Town
+- Other / Mixed
 
-写真ライセンスの初期候補:
+成果地点ごとに、地点名・位置・コメントと Wikipedia / Wikidata / Wikimedia Commons / OpenStreetMap / 一般URL の複数成果リンクを登録できます。Wikipedia の成果区分は `新規作成 / 加筆 / その他` を編集者が指定できます。公開ページでは Wikipedia / Wikidata / Commons / OSM を作品単位で集計します。
 
-- CC BY 4.0
-- CC BY-SA 4.0
-- CC0 1.0
+## 技術構成
 
-`All rights reserved` は選択肢に含めません。
+- Backend: PHP 8.2+
+- Database: MySQL
+- Frontend: Vanilla JavaScript
+- Map: MapLibre GL JS
+- Historical base maps: PMTiles
+- OSM diff: history-enabled Overpass API / `adiff`
+- Image processing: PHP GD
 
+MapLibre で `pmtiles://` ソースを読むため、PMTiles JavaScript protocol を登録しています。
 
-## 開発状況
+## MySQLテーブル
 
-現在は設計・初期実装段階です。仕様や実装タスクは GitHub Issues で管理しています。
+起動時に `CREATE TABLE IF NOT EXISTS` を実行します。
 
-- [Issues](https://github.com/K-Sakanoshita/place_field_notes/issues)
+- `projects`
+- `diffs`
+- `edit_sessions`
+- `featured_objects`
+- `entries`
+- `place_results`
+- `result_links`
+- `photos`
 
-地図・写真・Wikipedia / Wikimedia / OpenStreetMap由来のデータやコンテンツについては、それぞれの出典・ライセンスが別途適用されます。
+試作時に使っていたSQLite DB、PIDファイル、ログファイル、簡易テストファイルはリポジトリ管理対象から外しています。
 
+## 設定
 
-## 実装内容（PHP, SQLite, FastAPI 風）
+共有レンタルサーバーでは `config.example.php` を参考に設定してください。
 
-   ファイル                     役割
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   index.php                    ルーティング・リクエストハンドラ。/api/projects（作成・取得）、/api/osm-
-                                diff（差分プレビュー）、/api/projects/{id}/save-diff（差分保存）を処理。
-  ───────────────────────────  ─────────────────────────────────────────────────────────────────────────────────
-   src/Database.php             SQLite データベース初期化と PDO 取得。projects と diffs テーブルを作成。
-  ───────────────────────────  ─────────────────────────────────────────────────────────────────────────────────
-   src/Utils.php                共通ヘルパー。短い公開 ID、編集トークン生成・ハッシュ化、タイムゾーン→UTC変換、
-                                JSON レスポンス。
-  ───────────────────────────  ─────────────────────────────────────────────────────────────────────────────────
-   src/ProjectController.php    作品の作成・取得。編集トークンはハッシュのみ保存。
-  ───────────────────────────  ─────────────────────────────────────────────────────────────────────────────────
-   src/OsmDiffController.php    Overpass adiff 実行、結果のキャッシュ（diffs テーブル）と作品への差分紐付。
-  ───────────────────────────  ─────────────────────────────────────────────────────────────────────────────────
-   composer.json                PHP 8.0 要件と Utils.php の自動読み込み。
+```bash
+cp config.example.php config.local.php
+```
 
-### 主要ポイント
+`config.local.php` は `.gitignore` 対象です。可能ならWeb公開ディレクトリ外に置き、`PFN_CONFIG_FILE` で絶対パスを指定してください。
 
-  1. 公開 ID / 編集トークン
-      - generatePublicId() → 6文字 Base64(4バイト)
-      - generateEditToken() → 64 hex 文字
-      - ハッシュは hash('sha256', salt . token) で保存。
+```php
+<?php
+return [
+    'database' => [
+        'host' => 'mysql.example.ne.jp',
+        'port' => 3306,
+        'name' => 'account_place_field_notes',
+        'user' => 'account',
+        'password' => '********',
+    ],
+    'overpass_history_endpoint' => 'https://example.net/api/interpreter',
+    'upload_dir' => '/home/account/private/place-field-notes/uploads',
+];
+```
 
-  2. タイムゾーン処理
-      - フロントから送られた start_at, end_at と timezone を toUtc() で UTC ISO8601 へ変換。
+環境変数は設定ファイルより優先されます。
 
-  3. Overpass 差分取得
-      - 環境変数 OVERPASS_HISTORY_ENDPOINT で履歴対応 API を指定。
-      - adiff クエリを POST で送信し、失敗時は 400 エラー。
-      - 成功結果は JSON 文字列として diffs テーブルに diff_id（md5 キー）で保存。TTL は 1 時間。
+| 変数 | 用途 | 既定値 |
+|---|---|---|
+| `PFN_CONFIG_FILE` | 外部設定PHPの絶対パス | `./config.local.php` が存在すれば使用 |
+| `PFN_DB_HOST` | MySQL host | `127.0.0.1` |
+| `PFN_DB_PORT` | MySQL port | `3306` |
+| `PFN_DB_NAME` | DB名 | `place_field_notes` |
+| `PFN_DB_USER` | DBユーザー | 空（設定必須） |
+| `PFN_DB_PASSWORD` | DBパスワード | 空 |
+| `OVERPASS_HISTORY_ENDPOINT` | attic対応Overpass interpreter | `https://overpass-api.de/api/interpreter` |
+| `PFN_UPLOAD_DIR` | アップロード保存先 | `storage/uploads` |
+| `PFN_DIFF_CACHE_TTL` | 差分一時キャッシュ秒数 | `3600` |
+| `PFN_EDIT_SESSION_TTL` | 編集セッション秒数 | `604800` |
+| `PFN_MAX_ACTIVITY_HOURS` | 最大活動期間 | `168` |
+| `PFN_MAX_BBOX_DEGREES` | BBOXの最大緯度/経度幅 | `1.0` |
+| `PFN_MAX_UPLOAD_BYTES` | 1画像の最大容量 | `12582912` |
+| `PFN_MAX_PHOTOS_PER_PROJECT` | 1作品の最大写真数 | `100` |
+| `PFN_AUTO_MIGRATE` | 自動テーブル作成 | `1` |
 
-  4. 差分プレビュー & キャッシュ再利用
-      - 同一 BBOX・期間・タイムゾーンのリクエストはキャッシュを返却。
-      - diff_id をフロントへ返却し、後続で save-diff エンドポイントで作品に紐付。
+## さくらのレンタルサーバーへの配置
 
-  5. SQLite での永続化
-      - projects テーブルに BBOX（JSON）、日時、PMTiles ID 等を保持。
-      - changes_file に diff_id を格納し、後で差分データを取得。
+1. コントロールパネルでMySQLデータベースを作成する。
+2. PHP 8.2以降を選択する。
+3. PDO MySQL / mbstring / SimpleXML / fileinfo / GD が利用可能か確認する。
+4. リポジトリを配置する。
+5. `config.local.php` またはWeb公開領域外の設定ファイルにMySQL接続情報を設定する。
+6. ローカル写真を使う場合、`upload_dir` をPHPから書き込み可能にする。可能ならWeb公開領域外を指定する。
+7. `/api/health` が `{"status":"ok","database":"mysql"}` を返すことを確認する。
 
-  ———
+DBパスワードや編集用トークンをGitへコミットしないでください。
 
-## 次に行うべきこと
+## Overpass API
 
-   機能                                         現状        追加実装
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   GeoJSON 生成                                 未実装      Overpass の JSON を GeoJSON 形式へ変換し、
-                                                            summary_json へ格納。
-  ───────────────────────────────────────────  ──────────  ─────────────────────────────────────────────────────
-   主な変更点集計                               未実装      差分から「施設」「道路」等のカテゴリを算出。
-  ───────────────────────────────────────────  ──────────  ─────────────────────────────────────────────────────
-   Wikipedia / Wikidata / Commons の候補抽出    未実装      osm_type・osm_id を featured_objects に登録し、フロ
-                                                            ントで選択できるように。
-  ───────────────────────────────────────────  ──────────  ─────────────────────────────────────────────────────
-   画像・エントリー等の追加                     未実装      entries テーブルと画像アップロードロジック。
-  ───────────────────────────────────────────  ──────────  ─────────────────────────────────────────────────────
-   テスト                                       未実装      PHPUnit テストで API と Overpass 呼び出しをモックし
-                                                            て検証。
-  ───────────────────────────────────────────  ──────────  ─────────────────────────────────────────────────────
-   エラーハンドリングの拡張                     いくつか    adiff が非履歴 API で失敗した場合に明示的にエラー返
-                                                            却。
-  ───────────────────────────────────────────  ──────────  ─────────────────────────────────────────────────────
-   セキュリティ                                 低          edit_token をクッキーに設定し、URL から除去。
+`adiff` は履歴（attic data）を持つOverpass APIが必要です。履歴非対応やエラー応答の場合、空差分として成功扱いせずAPIエラーを返します。
 
-  ———
+同一 BBOX / 開始 / 終了 / タイムゾーンは一時キャッシュを再利用します。`adiff` は開始時点と終了時点の差を返すため、期間中の中間バージョンを全件列挙するものではありません。
 
-## 使い方（簡易デモ）
+## ローカル開発
 
-### Docker テスト環境
-
-Docker Compose を使い、専用の SQLite テストDBと PHP Webサーバを起動できます。
-テストDBは通常用の `place_field_notes.sqlite` とは分離され、停止後も保持されます。
+Docker Compose でも本番に合わせて MySQL 8.4 を使います。
 
 ```bash
 ./scripts/test-env-docker.sh start
 ./scripts/test-env-docker.sh test
 ```
 
-Web API は既定で `http://127.0.0.1:8082/` から利用できます。
-停止は `./scripts/test-env-docker.sh stop`、DBを作り直す場合は
-`./scripts/test-env-docker.sh reset --yes` を実行してください。
-利用できるコマンドとポート変更方法は `./scripts/test-env-docker.sh help` で確認できます。
+既定URLは `http://127.0.0.1:8082/` です。停止は `./scripts/test-env-docker.sh stop`、DBとアップロード領域の再作成は `./scripts/test-env-docker.sh reset --yes` を使います。
 
-### ホスト上での簡易起動
+`test` は外部Overpass APIを呼ばず、MySQL接続と Wikipedia Town 型作品の作成APIをスモークテストします。
 
-  1. 依存関係インストール
+## API
 
-     composer install
+```text
+GET    /api/health
+POST   /api/osm-diff
+POST   /api/projects
+GET    /api/projects/{public_id}
+GET    /api/projects/{public_id}?editor=1
+PATCH  /api/projects/{public_id}
+POST   /api/projects/{public_id}/edit-session
+DELETE /api/edit-session
+POST   /api/projects/{public_id}/photos
+PATCH  /api/projects/{public_id}/photos/{photo_id}
+DELETE /api/projects/{public_id}/photos/{photo_id}
+GET    /media/{public_id}/{photo_id}/image
+GET    /media/{public_id}/{photo_id}/thumb
+```
 
-  2. サーバ起動
+作品更新と写真変更APIは認証済み編集セッションからのみ利用できます。
 
-     php -S 0.0.0.0:8000 index.php
+## 意図的な制限
 
-  3. サンプルリクエスト
+- Wikipedia / Wikidata / Commons の編集履歴をBBOXと期間から自動探索しません。
+- Wikimedia APIによる作者・ライセンス自動補完はまだ行いません。
+- Wikimedia各サービスへの編集・投稿は行いません。
+- 一般URLのコンテンツを自動転載・恒久キャッシュしません。
+- 活動開始時点を厳密に再現したタイルではなく、活動開始日前の利用可能な年次PMTilesを比較元にします。
+- ユーザー登録、OAuth、一般閲覧者コメント、編集者ランキング、SNS機能は対象外です。
 
-     # 作品作成
-     curl -X POST http://localhost:8000/api/projects \
-          -H "Content-Type: application/json" \
-          -d '{"title":"Test","bbox":[139.700,35.680,139.710,35.690],"start_at":"2026-09-
-          20T13:00:00","end_at":"2026-09-20T15:00:00","timezone":"Asia/Tokyo","base_map":"2026-09"}'
+## License
 
-     # 差分プレビュー
-     curl -X POST http://localhost:8000/api/osm-diff \
-          -H "Content-Type: application/json" \
-          -d '{"bbox":[139.700,35.680,139.710,35.690],"start_at":"2026-09-20T13:00:00","end_at":"2026-09-
-          20T15:00:00","timezone":"Asia/Tokyo"}'
-
-  ———
-
-これで 作品作成・公開 ID・編集トークン発行、Overpass adiff 呼び出し・キャッシュ までの基本機能が動作します。
-残りの機能（GeoJSON 生成・集計・候補抽出など）は上記テーブルを基に追加実装していただければと思います。
+MIT License. See [LICENSE](LICENSE).
