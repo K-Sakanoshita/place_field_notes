@@ -37,6 +37,8 @@ run_tests(){
   [[ "$health" == *'"database":"mysql"'* ]]
   curl -fsS "$base/enhancements.js" >/dev/null
   curl -fsS "$base/enhancements.css" >/dev/null
+  curl -fsS "$base/place-details.js" >/dev/null
+  curl -fsS "$base/photo-exif.js" >/dev/null
 
   compose exec -T web sh -lc 'find /app -maxdepth 2 -name "*.php" -print0 | xargs -0 -n1 php -l >/dev/null'
 
