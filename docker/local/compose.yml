@@ -1,0 +1,24 @@
+services:
+  web:
+    image: php:8.4-cli-bookworm
+    command: ["php", "-S", "0.0.0.0:8080", "-t", "/app", "/app/index.php"]
+    environment:
+      PLACE_FIELD_NOTES_DB_PATH: /data/place_field_notes_test.sqlite
+    ports:
+      - "127.0.0.1:${PFN_TEST_WEB_PORT:-8082}:8080"
+    volumes:
+      - ../..:/app:ro
+      - test-database:/data
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - "exit(@file_get_contents('http://127.0.0.1:8080/api/health') === false ? 1 : 0);"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+volumes:
+  test-database:

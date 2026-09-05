@@ -1,0 +1,14 @@
+{
+  "Place Field Notes": "Place Field Notes",
+  "title": "タイトル",
+  "description_label": "説明",
+  "start_label": "開始日時",
+  "end_label": "終了日時",
+  "please_draw_bbox": "地図上で BBOX を描画してください。",
+  "diff_preview": "差分プレビュー",
+  "create": "作成",
+  "save": "保存",
+  "please_confirm_diff": "差分を確認してください。",
+  "project_saved": "作品が保存されました！次の画面で URL をご確認ください。",
+  "enter_comment": "コメントを入力"
+}

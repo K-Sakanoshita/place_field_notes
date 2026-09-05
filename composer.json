@@ -1,0 +1,9 @@
+{
+    "require": {
+        "php": "^8.0"
+    },
+    "autoload": {
+        "files": ["src/Utils.php"]
+    }
+}
+

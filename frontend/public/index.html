@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title data-i18n="Place Field Notes">Place Field Notes</title>
+  <link rel="stylesheet" href="style.css">
+  <link href="https://unpkg.com/maplibre-gl@4.3.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <!-- Mapbox GL Draw CSS (required for control UI) – the correct CDN URL
+       (package name is `maplibre-gl-draw`) -->
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl-draw@1.6.9/dist/mapbox-gl-draw.css" rel="stylesheet" />
+  <!-- CDN: MapLibre GL JS -->
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.3.0/dist/maplibre-gl.js"></script>
+  <!-- Load Mapbox GL Draw from CDN. The UMD bundle exposes a global `MapboxDraw`.
+       We include it directly to avoid module import issues in older browsers.
+       The script is loaded before our application scripts so the global is
+       available when `frontend/public/map.js` is executed.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl-draw@1.6.9/dist/mapbox-gl-draw.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <h1 id="title" data-i18n="title"></h1>
+    <form id="project-form">
+      <label><span data-i18n="title_label"></span> <input type="text" name="title" required></label>
+      <label><span data-i18n="description_label"></span> <textarea name="description"></textarea></label>
+      <label><span data-i18n="start_label"></span> <input type="datetime-local" name="start_at" required></label>
+      <label><span data-i18n="end_label"></span> <input type="datetime-local" name="end_at" required></label>
+      <input type="hidden" name="bbox" id="bbox-input">
+      <button type="submit" id="create-btn" data-i18n="create"></button>
+    </form>
+
+    <div id="map-container"></div>
+
+    <div id="diff-info" style="display:none;">
+      <h2 id="diff-title" data-i18n="diff_preview"></h2>
+      <div id="main-map" style="height:500px;"></div>
+      <div id="candidate-list"></div>
+      <button id="save-btn" data-i18n="save"></button>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="api.js"></script>
+  <script src="map.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

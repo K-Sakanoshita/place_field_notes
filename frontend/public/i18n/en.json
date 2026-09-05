@@ -1,0 +1,14 @@
+{
+  "Place Field Notes": "Place Field Notes",
+  "title": "Title",
+  "description_label": "Description",
+  "start_label": "Start datetime",
+  "end_label": "End datetime",
+  "please_draw_bbox": "Please draw a BBOX on the map.",
+  "diff_preview": "Diff Preview",
+  "create": "Create",
+  "save": "Save",
+  "please_confirm_diff": "Please confirm the diff first",
+  "project_saved": "Project saved! Check the URLs on the next screen.",
+  "enter_comment": "Enter comment"
+}

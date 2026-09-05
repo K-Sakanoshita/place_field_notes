@@ -1,0 +1,8 @@
+body{font-family:Arial, sans-serif;margin:0;padding:0;}
+#app{max-width:960px;margin:auto;padding:1rem;}
+label{display:block;margin:0.5rem 0;}
+#map-container{height:400px;margin:1rem 0;}
+#main-map{height:500px;}
+#candidate-list{margin-top:1rem;}
+button{padding:0.5rem 1rem;margin-top:0.5rem;}
+textarea{width:100%;margin-top:4px;}
