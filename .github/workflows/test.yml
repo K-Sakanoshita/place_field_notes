@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/test-env-docker.sh
+          node --check frontend/public/api.js
+          node --check frontend/public/i18n.js
+          node --check frontend/public/map.js
+          node --check frontend/public/main.js
+          node --check frontend/public/media.js
+          node --check frontend/public/enhancements.js
+          python3 - <<'PY'
+          import json
+          for path in ('frontend/public/i18n/ja.json', 'frontend/public/i18n/en.json'):
+              with open(path, encoding='utf-8') as f:
+                  json.load(f)
+          PY
+
+      - name: Start MySQL test environment
+        run: ./scripts/test-env-docker.sh start
+
+      - name: Run API and MySQL smoke tests
+        run: ./scripts/test-env-docker.sh test
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose --project-name place-field-notes-test --file docker/local/compose.yml logs --no-color --tail=200
+
+      - name: Stop test environment
+        if: always()
+        run: ./scripts/test-env-docker.sh stop
