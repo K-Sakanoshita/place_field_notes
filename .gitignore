@@ -1,0 +1,10 @@
+/vendor/
+/config.local.php
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+*.sqlite
+*.sqlite3
+*.log
+pid*.txt
+server_pid.txt
+.DS_Store

@@ -1,46 +1,60 @@
-// api.js – fetch 封装
 const api = {
-  createProject: async (data) => {
-    const res = await fetch('/api/projects', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw await res.json();
-    return res.json();
+  async request(url, options = {}) {
+    const response = await fetch(url, options);
+    const text = await response.text();
+    let data = {};
+    if (text) {
+      try { data = JSON.parse(text); }
+      catch { data = { error: text }; }
+    }
+    if (!response.ok) {
+      const error = new Error(data.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
   },
 
-  getDiff: async (body) => {
-    const res = await fetch('/api/osm-diff', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
+  previewDiff(data) {
+    return this.request('/api/osm-diff', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
     });
-    // For debugging: log raw response body
-    const raw = await res.text();
-    console.log('[api.getDiff] raw response:', raw);
-    if (!res.ok) {
-      try {
-        const err = JSON.parse(raw);
-        throw err;
-      } catch {
-        throw new Error(`Unexpected response: ${raw}`);
-      }
-    }
-    try {
-      return JSON.parse(raw);
-    } catch (e) {
-      throw new Error(`Failed to parse JSON: ${raw}`);
-    }
   },
 
-  attachDiff: async (publicId, diffId) => {
-    const res = await fetch(`/api/projects/${publicId}/save-diff`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ diff_id: diffId }),
+  createProject(data) {
+    return this.request('/api/projects', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
     });
-    if (!res.ok) throw await res.json();
-    return res.json();
+  },
+
+  getProject(publicId, editor = false) {
+    return this.request(`/api/projects/${encodeURIComponent(publicId)}${editor ? '?editor=1' : ''}`);
+  },
+
+  establishEditSession(publicId, token) {
+    return this.request(`/api/projects/${encodeURIComponent(publicId)}/edit-session`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+    });
+  },
+
+  updateProject(publicId, data) {
+    return this.request(`/api/projects/${encodeURIComponent(publicId)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+  },
+
+  createPhoto(publicId, formData) {
+    return this.request(`/api/projects/${encodeURIComponent(publicId)}/photos`, { method: 'POST', body: formData });
+  },
+
+  updatePhoto(publicId, photoId, data) {
+    return this.request(`/api/projects/${encodeURIComponent(publicId)}/photos/${Number(photoId)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+  },
+
+  deletePhoto(publicId, photoId) {
+    return this.request(`/api/projects/${encodeURIComponent(publicId)}/photos/${Number(photoId)}`, { method: 'DELETE' });
   },
 };

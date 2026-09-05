@@ -1,154 +1,184 @@
 <?php
-/**
- * Simple SQLite wrapper using command line sqlite3.
- */
 
 declare(strict_types=1);
 
-class Database
+final class Database
 {
-    private string $path;
+    private PDO $pdo;
 
-    public function __construct(string $path)
+    public function __construct(array $config, bool $autoMigrate = true)
     {
-        $this->path = $path;
-        // Ensure database file exists and tables are created
-        $this->initialize();
-    }
-
-    private function initialize(): void
-    {
-        $createProjects =
-            "CREATE TABLE IF NOT EXISTS projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                public_id TEXT UNIQUE NOT NULL,
-                edit_token_hash TEXT NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT,
-                bbox TEXT NOT NULL,
-                start_at TEXT NOT NULL,
-                end_at TEXT NOT NULL,
-                timezone TEXT NOT NULL,
-                base_map TEXT NOT NULL,
-                changes_file TEXT,
-                summary_json TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );";
-        $createDiffs =
-            "CREATE TABLE IF NOT EXISTS diffs (
-                diff_id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                ttl INTEGER NOT NULL
-            );";
-        $this->executeRaw($createProjects);
-        $this->executeRaw($createDiffs);
-    }
-
-    public function prepare(string $sql): SimpleStatement
-    {
-        return new SimpleStatement($this->path, $sql);
-    }
-
-    public function lastInsertId(): int
-    {
-        $output = shell_exec("sqlite3 {$this->path} 'SELECT last_insert_rowid()' 2>&1");
-        return (int)trim($output);
-    }
-
-    private function executeRaw(string $sql): void
-    {
-        $cmd = "sqlite3 {$this->path} \"$sql\" 2>&1";
-        shell_exec($cmd);
-    }
-}
-
-class SimpleStatement
-{
-    private string $path;
-    private string $sql;
-    private array $rows = [];
-    private int $index = 0;
-    private bool $executed = false;
-
-    public function __construct(string $path, string $sql)
-    {
-        $this->path = $path;
-        $this->sql = $sql;
-    }
-
-    public function execute(array $params = []): bool
-    {
-        $sql = $this->sql;
-        foreach ($params as $key => $value) {
-            $placeholder = ':' . $key;
-            $replacement = $this->quote($value);
-            $sql = str_replace($placeholder, $replacement, $sql);
+        $host = (string)($config['host'] ?? '127.0.0.1');
+        $port = (int)($config['port'] ?? 3306);
+        $name = (string)($config['name'] ?? 'place_field_notes');
+        $user = (string)($config['user'] ?? '');
+        $password = (string)($config['password'] ?? '');
+        if ($user === '') {
+            throw new RuntimeException('Database user is not configured');
         }
-        // Determine if query is SELECT
-        if (stripos(ltrim($sql), 'SELECT') === 0) {
-            // Execute SELECT query and capture output.
-            $cmd = "sqlite3 " . escapeshellarg($this->path) . " -separator '|' " . escapeshellarg($sql) . " 2>&1";
-            exec($cmd, $outputLines, $returnVar);
-            $output = implode("\n", $outputLines);
 
-            // Parse the output into rows.
-            $lines = preg_split('/\R/', trim($output));
-            $this->rows = [];
-            if ($lines[0] !== null && $lines[0] !== '') {
-                // Get column names via PRAGMA.
-                $table = $this->extractTable($sql);
-                $infoCmd = "sqlite3 {$this->path} \"PRAGMA table_info(\"$table\")\" 2>&1";
-                $infoOutput = shell_exec($infoCmd);
-                $cols = [];
-                foreach (preg_split('/\R/', trim($infoOutput)) as $infoLine) {
-                    $infoParts = preg_split('/\|/', $infoLine);
-                    $cols[] = $infoParts[1] ?? null;
-                }
-                foreach ($lines as $line) {
-                    if ($line === '') continue;
-                    $parts = explode('|', $line);
-                    $row = [];
-                    foreach ($cols as $i => $col) {
-                        $row[$col] = $parts[$i] ?? null;
-                    }
-                    $this->rows[] = $row;
-                }
+        $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $host, $port, $name);
+        $this->pdo = new PDO($dsn, $user, $password, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]);
+        $this->pdo->exec("SET time_zone = '+00:00'");
+        if ($autoMigrate) {
+            $this->migrate();
+        }
+    }
+
+    public function pdo(): PDO
+    {
+        return $this->pdo;
+    }
+
+    public function transaction(callable $callback): mixed
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $result = $callback($this->pdo);
+            $this->pdo->commit();
+            return $result;
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
             }
-        } else {
-            // Non-SELECT query.
-            $cmd = "sqlite3 " . escapeshellarg($this->path) . " " . escapeshellarg($sql) . " 2>&1";
-            exec($cmd, $outputLines, $returnVar);
-            $output = implode("\n", $outputLines);
+            throw $e;
         }
-        $this->executed = true;
-        return true;
     }
 
-    private function quote($value): string
+    public function migrate(): void
     {
-        if (is_numeric($value)) {
-            return (string)$value;
+        $statements = [
+            "CREATE TABLE IF NOT EXISTS projects (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                public_id VARCHAR(24) NOT NULL UNIQUE,
+                edit_token_hash VARCHAR(255) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                description TEXT NULL,
+                activity_type VARCHAR(32) NOT NULL DEFAULT 'osm',
+                bbox_json TEXT NOT NULL,
+                start_at DATETIME NOT NULL,
+                end_at DATETIME NOT NULL,
+                timezone VARCHAR(64) NOT NULL,
+                base_map VARCHAR(128) NOT NULL,
+                diff_id CHAR(64) NULL,
+                summary_json LONGTEXT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_projects_diff_id (diff_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS diffs (
+                diff_id CHAR(64) NOT NULL PRIMARY KEY,
+                request_json TEXT NOT NULL,
+                data_json LONGTEXT NOT NULL,
+                project_id BIGINT UNSIGNED NULL,
+                persistent TINYINT(1) NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                expires_at DATETIME NOT NULL,
+                INDEX idx_diffs_expires (expires_at),
+                INDEX idx_diffs_project (project_id),
+                CONSTRAINT fk_diffs_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS edit_sessions (
+                session_hash CHAR(64) NOT NULL PRIMARY KEY,
+                project_id BIGINT UNSIGNED NOT NULL,
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL,
+                INDEX idx_edit_sessions_project (project_id),
+                INDEX idx_edit_sessions_expires (expires_at),
+                CONSTRAINT fk_edit_sessions_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS featured_objects (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                project_id BIGINT UNSIGNED NOT NULL,
+                osm_type VARCHAR(16) NOT NULL,
+                osm_id BIGINT UNSIGNED NOT NULL,
+                name VARCHAR(255) NULL,
+                wikipedia VARCHAR(1024) NULL,
+                wikidata VARCHAR(128) NULL,
+                wikimedia_commons VARCHAR(1024) NULL,
+                include_in_results TINYINT(1) NOT NULL DEFAULT 0,
+                comment TEXT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                UNIQUE KEY uq_featured_osm (project_id, osm_type, osm_id),
+                INDEX idx_featured_project (project_id, sort_order),
+                CONSTRAINT fk_featured_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS entries (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                project_id BIGINT UNSIGNED NOT NULL,
+                body TEXT NOT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_entries_project (project_id, sort_order),
+                CONSTRAINT fk_entries_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS place_results (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                project_id BIGINT UNSIGNED NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                lat DECIMAL(10,7) NULL,
+                lon DECIMAL(10,7) NULL,
+                comment TEXT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_place_results_project (project_id, sort_order),
+                CONSTRAINT fk_place_results_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS result_links (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                place_result_id BIGINT UNSIGNED NOT NULL,
+                source_type VARCHAR(32) NOT NULL,
+                source_key VARCHAR(512) NOT NULL,
+                source_url VARCHAR(2048) NULL,
+                result_type VARCHAR(32) NULL,
+                metadata_json LONGTEXT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                INDEX idx_result_links_place (place_result_id, sort_order),
+                CONSTRAINT fk_result_links_place FOREIGN KEY (place_result_id) REFERENCES place_results(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS photos (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                project_id BIGINT UNSIGNED NOT NULL,
+                entry_id BIGINT UNSIGNED NULL,
+                place_result_id BIGINT UNSIGNED NULL,
+                featured_object_id BIGINT UNSIGNED NULL,
+                source_type VARCHAR(16) NOT NULL,
+                filename VARCHAR(255) NULL,
+                thumbnail_filename VARCHAR(255) NULL,
+                commons_file VARCHAR(512) NULL,
+                source_url VARCHAR(2048) NULL,
+                caption TEXT NULL,
+                creator VARCHAR(255) NULL,
+                credit VARCHAR(512) NULL,
+                lat DECIMAL(10,7) NULL,
+                lon DECIMAL(10,7) NULL,
+                license VARCHAR(32) NOT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_photos_project (project_id, sort_order),
+                CONSTRAINT fk_photos_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                CONSTRAINT fk_photos_entry FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE SET NULL,
+                CONSTRAINT fk_photos_place FOREIGN KEY (place_result_id) REFERENCES place_results(id) ON DELETE SET NULL,
+                CONSTRAINT fk_photos_featured FOREIGN KEY (featured_object_id) REFERENCES featured_objects(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        ];
+        foreach ($statements as $sql) {
+            $this->pdo->exec($sql);
         }
-        return "'" . str_replace("'", "''", $value) . "'";
-    }
 
-    private function extractTable(string $sql): string
-    {
-        if (preg_match('/FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)/i', $sql, $m) || preg_match('/UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)/i', $sql, $m)) {
-            return $m[1];
+        // Older development schemas used CHAR(64), which is too short for future
+        // PASSWORD_DEFAULT formats. Only alter when an old schema is detected.
+        $stmt = $this->pdo->query("SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'edit_token_hash'");
+        $length = (int)$stmt->fetchColumn();
+        if ($length > 0 && $length < 255) {
+            $this->pdo->exec('ALTER TABLE projects MODIFY edit_token_hash VARCHAR(255) NOT NULL');
         }
-        return '';
-    }
-
-    public function fetch($mode = null): ?array
-    {
-        if (!$this->executed || $this->index >= count($this->rows)) {
-            // No more rows; return null to satisfy ?array return type.
-            return null;
-        }
-        return $this->rows[$this->index++];
     }
 }
-?>
