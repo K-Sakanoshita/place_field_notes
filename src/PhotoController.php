@@ -1,8 +1,319 @@
 <?php
- declare(strict_types=1); final class PhotoController { public function __construct(private PDO $pdo, private string $uploadDir, private int $maxUploadBytes) { $this->uploadDir = rtrim($this->uploadDir, DIRECTORY_SEPARATOR); } public function create(int $projectId, array $data, array $files): array { $maxPhotos = max(1, (int)envValue('PFN_MAX_PHOTOS_PER_PROJECT', '100')); $stmt = $this->pdo->prepare('SELECT COUNT(*) FROM photos WHERE project_id = :project_id'); $stmt->execute(['project_id' => $projectId]); if ((int)$stmt->fetchColumn() >= $maxPhotos) { throw new InvalidArgumentException("A project can contain at most {$maxPhotos} photos"); } $sourceType = strtolower(requireString($data, 'source_type', 16)); if (!in_array($sourceType, ['upload', 'commons', 'url'], true)) { throw new InvalidArgumentException('Unsupported photo source_type'); } $license = validatedLicense(requireString($data, 'license', 32)); $caption = optionalString($data, 'caption', 10000); $creator = optionalString($data, 'creator', 255); $credit = optionalString($data, 'credit', 512); $lat = optionalFloat($data, 'lat', -90, 90); $lon = optionalFloat($data, 'lon', -180, 180); $entryId = $this->associationId($projectId, 'entries', $data['entry_id'] ?? null); $placeId = $this->associationId($projectId, 'place_results', $data['place_result_id'] ?? null); $featuredId = $this->associationId($projectId, 'featured_objects', $data['featured_object_id'] ?? null); $sortOrder = (int)($data['sort_order'] ?? 0); $filename = null; $thumbFilename = null; $commonsFile = null; $sourceUrl = null; if ($sourceType === 'upload') { [$filename, $thumbFilename] = $this->storeUploadedImage($files['file'] ?? null); } elseif ($sourceType === 'commons') { $commonsFile = normalizeCommonsFile(requireString($data, 'commons_file', 512)); $sourceUrl = commonsPageUrl($commonsFile); } else { $sourceUrl = validatedHttpUrl(requireString($data, 'source_url', 2048)); } try { $now = utcNow(); $stmt = $this->pdo->prepare( 'INSERT INTO photos (project_id,entry_id,place_result_id,featured_object_id,source_type,filename,
-                 thumbnail_filename,commons_file,source_url,caption,creator,credit,lat,lon,license,sort_order,created_at,updated_at)
-                 VALUES (:project_id,:entry_id,:place_id,:featured_id,:source_type,:filename,:thumb,:commons_file,
-                 :source_url,:caption,:creator,:credit,:lat,:lon,:license,:sort_order,:now,:now)' ); $stmt->execute([ 'project_id'=>$projectId,'entry_id'=>$entryId,'place_id'=>$placeId,'featured_id'=>$featuredId, 'source_type'=>$sourceType,'filename'=>$filename,'thumb'=>$thumbFilename,'commons_file'=>$commonsFile, 'source_url'=>$sourceUrl,'caption'=>$caption,'creator'=>$creator,'credit'=>$credit,'lat'=>$lat,'lon'=>$lon, 'license'=>$license,'sort_order'=>$sortOrder,'now'=>$now, ]); return ['id' => (int)$this->pdo->lastInsertId()]; } catch (Throwable $e) { $this->unlinkStored($filename); $this->unlinkStored($thumbFilename); throw $e; } } public function update(int $projectId, int $photoId, array $data): void { $stmt = $this->pdo->prepare('SELECT source_type,commons_file,source_url FROM photos WHERE id=:id AND project_id=:project_id'); $stmt->execute(['id'=>$photoId,'project_id'=>$projectId]); $photo = $stmt->fetch(); if (!$photo) throw new RuntimeException('Photo not found'); $license = validatedLicense(requireString($data, 'license', 32)); $caption = optionalString($data, 'caption', 10000); $creator = optionalString($data, 'creator', 255); $credit = optionalString($data, 'credit', 512); $lat = optionalFloat($data, 'lat', -90, 90); $lon = optionalFloat($data, 'lon', -180, 180); $entryId = $this->associationId($projectId, 'entries', $data['entry_id'] ?? null); $placeId = $this->associationId($projectId, 'place_results', $data['place_result_id'] ?? null); $featuredId = $this->associationId($projectId, 'featured_objects', $data['featured_object_id'] ?? null); $commonsFile = $photo['commons_file']; $sourceUrl = $photo['source_url']; if ($photo['source_type'] === 'commons' && array_key_exists('commons_file', $data)) { $commonsFile = normalizeCommonsFile(requireString($data, 'commons_file', 512)); $sourceUrl = commonsPageUrl($commonsFile); } if ($photo['source_type'] === 'url' && array_key_exists('source_url', $data)) { $sourceUrl = validatedHttpUrl(requireString($data, 'source_url', 2048)); } $stmt = $this->pdo->prepare( 'UPDATE photos SET entry_id=:entry_id,place_result_id=:place_id,featured_object_id=:featured_id,
-             commons_file=:commons_file,source_url=:source_url,caption=:caption,creator=:creator,credit=:credit,
-             lat=:lat,lon=:lon,license=:license,sort_order=:sort_order,updated_at=:now WHERE id=:id AND project_id=:project_id' ); $stmt->execute([ 'entry_id'=>$entryId,'place_id'=>$placeId,'featured_id'=>$featuredId,'commons_file'=>$commonsFile, 'source_url'=>$sourceUrl,'caption'=>$caption,'creator'=>$creator,'credit'=>$credit,'lat'=>$lat,'lon'=>$lon, 'license'=>$license,'sort_order'=>(int)($data['sort_order'] ?? 0),'now'=>utcNow(),'id'=>$photoId,'project_id'=>$projectId, ]); } public function delete(int $projectId, int $photoId): void { $stmt = $this->pdo->prepare('SELECT filename,thumbnail_filename FROM photos WHERE id=:id AND project_id=:project_id'); $stmt->execute(['id'=>$photoId,'project_id'=>$projectId]); $photo = $stmt->fetch(); if (!$photo) throw new RuntimeException('Photo not found'); $this->pdo->prepare('DELETE FROM photos WHERE id=:id AND project_id=:project_id')->execute(['id'=>$photoId,'project_id'=>$projectId]); $this->unlinkStored($photo['filename'] ?? null); $this->unlinkStored($photo['thumbnail_filename'] ?? null); } public function serve(string $publicId, int $photoId, string $size): never { $stmt = $this->pdo->prepare( 'SELECT ph.filename,ph.thumbnail_filename FROM photos ph JOIN projects p ON p.id=ph.project_id
-             WHERE ph.id=:id AND p.public_id=:public_id AND ph.source_type="upload"' ); $stmt->execute(['id'=>$photoId,'public_id'=>$publicId]); $photo = $stmt->fetch(); if (!$photo) { http_response_code(404); exit; } $name = $size === 'thumb' ? $photo['thumbnail_filename'] : $photo['filename']; if (!is_string($name) || $name === '' || basename($name) !== $name) { http_response_code(404); exit; } $path = $this->uploadDir . DIRECTORY_SEPARATOR . $name; if (!is_file($path)) { http_response_code(404); exit; } header('Content-Type: image/webp'); header('X-Content-Type-Options: nosniff'); header('Cache-Control: public, max-age=86400'); header('Content-Length: ' . filesize($path)); readfile($path); exit; } private function associationId(int $projectId, string $table, mixed $value): ?int { if ($value === null || $value === '') return null; $id = (int)$value; if ($id <= 0) throw new InvalidArgumentException('Invalid association id'); if (!in_array($table, ['entries','place_results','featured_objects'], true)) { throw new LogicException('Invalid association table'); } $stmt = $this->pdo->prepare("SELECT 1 FROM {$table} WHERE id=:id AND project_id=:project_id"); $stmt->execute(['id'=>$id,'project_id'=>$projectId]); if (!$stmt->fetchColumn()) throw new InvalidArgumentException('Associated item does not belong to this project'); return $id; } private function storeUploadedImage(mixed $file): array { if (!is_array($file) || !isset($file['tmp_name'], $file['error'], $file['size'])) { throw new InvalidArgumentException('Image file is required'); } if ((int)$file['error'] !== UPLOAD_ERR_OK) throw new InvalidArgumentException('Image upload failed'); if ((int)$file['size'] <= 0 || (int)$file['size'] > $this->maxUploadBytes) throw new InvalidArgumentException('Image file is too large'); if (!is_uploaded_file((string)$file['tmp_name'])) throw new InvalidArgumentException('Invalid uploaded file'); if (!function_exists('imagecreatefromstring') || !function_exists('imagewebp')) { throw new RuntimeException('PHP GD with WebP support is required for image uploads'); } $finfo = new finfo(FILEINFO_MIME_TYPE); $mime = $finfo->file((string)$file['tmp_name']); if (!in_array($mime, ['image/jpeg','image/png','image/webp'], true)) { throw new InvalidArgumentException('Only JPEG, PNG and WebP images are supported'); } $raw = file_get_contents((string)$file['tmp_name']); $source = is_string($raw) ? @imagecreatefromstring($raw) : false; if ($source === false) throw new InvalidArgumentException('Uploaded file is not a valid image'); if (!is_dir($this->uploadDir) && !mkdir($this->uploadDir, 0700, true) && !is_dir($this->uploadDir)) { imagedestroy($source); throw new RuntimeException('Could not create the upload directory'); } if (!is_writable($this->uploadDir)) { imagedestroy($source); throw new RuntimeException('Upload directory is not writable'); } $base = bin2hex(random_bytes(16)); $filename = $base . '.webp'; $thumb = $base . '-thumb.webp'; try { $this->writeResized($source, $this->uploadDir . DIRECTORY_SEPARATOR . $filename, 1800, 88); $this->writeResized($source, $this->uploadDir . DIRECTORY_SEPARATOR . $thumb, 600, 82); } catch (Throwable $e) { imagedestroy($source); $this->unlinkStored($filename); $this->unlinkStored($thumb); throw $e; } imagedestroy($source); return [$filename, $thumb]; } private function writeResized(GdImage $source, string $path, int $maxSide, int $quality): void { $width = imagesx($source); $height = imagesy($source); $scale = min(1.0, $maxSide / max($width, $height)); $newWidth = max(1, (int)round($width * $scale)); $newHeight = max(1, (int)round($height * $scale)); $target = imagecreatetruecolor($newWidth, $newHeight); imagealphablending($target, false); imagesavealpha($target, true); $transparent = imagecolorallocatealpha($target, 0, 0, 0, 127); imagefill($target, 0, 0, $transparent); imagecopyresampled($target, $source, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height); if (!imagewebp($target, $path, $quality)) { imagedestroy($target); throw new RuntimeException('Could not encode image as WebP'); } imagedestroy($target); @chmod($path, 0600); } private function unlinkStored(mixed $name): void { if (!is_string($name) || $name === '' || basename($name) !== $name) return; $path = $this->uploadDir . DIRECTORY_SEPARATOR . $name; if (is_file($path)) @unlink($path); } }
+
+declare(strict_types=1);
+
+final class PhotoController
+{
+    public function __construct(
+        private PDO $pdo,
+        private string $uploadDir,
+        private int $maxUploadBytes
+    ) {
+        $this->uploadDir = rtrim($this->uploadDir, DIRECTORY_SEPARATOR);
+    }
+
+    public function create(int $projectId, array $data, array $files): array
+    {
+        $maxPhotos = max(1, (int)envValue('PFN_MAX_PHOTOS_PER_PROJECT', '100'));
+        $stmt = $this->pdo->prepare('SELECT COUNT(*) FROM photos WHERE project_id = :project_id');
+        $stmt->execute(['project_id' => $projectId]);
+        if ((int)$stmt->fetchColumn() >= $maxPhotos) {
+            throw new InvalidArgumentException("A project can contain at most {$maxPhotos} photos");
+        }
+
+        $sourceType = strtolower(requireString($data, 'source_type', 16));
+        if (!in_array($sourceType, ['upload', 'commons', 'url'], true)) {
+            throw new InvalidArgumentException('Unsupported photo source_type');
+        }
+
+        $license = validatedLicense(requireString($data, 'license', 32));
+        $caption = optionalString($data, 'caption', 10000);
+        $creator = optionalString($data, 'creator', 255);
+        $credit = optionalString($data, 'credit', 512);
+        $lat = optionalFloat($data, 'lat', -90, 90);
+        $lon = optionalFloat($data, 'lon', -180, 180);
+        $entryId = $this->associationId($projectId, 'entries', $data['entry_id'] ?? null);
+        $placeId = $this->associationId($projectId, 'place_results', $data['place_result_id'] ?? null);
+        $featuredId = $this->associationId($projectId, 'featured_objects', $data['featured_object_id'] ?? null);
+        $sortOrder = (int)($data['sort_order'] ?? 0);
+
+        $filename = null;
+        $thumbFilename = null;
+        $commonsFile = null;
+        $sourceUrl = null;
+        if ($sourceType === 'upload') {
+            [$filename, $thumbFilename] = $this->storeUploadedImage($files['file'] ?? null);
+        } elseif ($sourceType === 'commons') {
+            $commonsFile = normalizeCommonsFile(requireString($data, 'commons_file', 512));
+            $sourceUrl = commonsPageUrl($commonsFile);
+        } else {
+            $sourceUrl = validatedHttpUrl(requireString($data, 'source_url', 2048));
+        }
+
+        try {
+            $now = utcNow();
+            $stmt = $this->pdo->prepare(
+                'INSERT INTO photos (
+                    project_id, entry_id, place_result_id, featured_object_id, source_type, filename,
+                    thumbnail_filename, commons_file, source_url, caption, creator, credit, lat, lon,
+                    license, sort_order, created_at, updated_at
+                 ) VALUES (
+                    :project_id, :entry_id, :place_id, :featured_id, :source_type, :filename,
+                    :thumb, :commons_file, :source_url, :caption, :creator, :credit, :lat, :lon,
+                    :license, :sort_order, :created_at, :updated_at
+                 )'
+            );
+            $stmt->execute([
+                'project_id' => $projectId,
+                'entry_id' => $entryId,
+                'place_id' => $placeId,
+                'featured_id' => $featuredId,
+                'source_type' => $sourceType,
+                'filename' => $filename,
+                'thumb' => $thumbFilename,
+                'commons_file' => $commonsFile,
+                'source_url' => $sourceUrl,
+                'caption' => $caption,
+                'creator' => $creator,
+                'credit' => $credit,
+                'lat' => $lat,
+                'lon' => $lon,
+                'license' => $license,
+                'sort_order' => $sortOrder,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            return ['id' => (int)$this->pdo->lastInsertId()];
+        } catch (Throwable $e) {
+            $this->unlinkStored($filename);
+            $this->unlinkStored($thumbFilename);
+            throw $e;
+        }
+    }
+
+    public function update(int $projectId, int $photoId, array $data): void
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT source_type, commons_file, source_url
+             FROM photos WHERE id = :id AND project_id = :project_id'
+        );
+        $stmt->execute(['id' => $photoId, 'project_id' => $projectId]);
+        $photo = $stmt->fetch();
+        if (!$photo) {
+            throw new RuntimeException('Photo not found');
+        }
+
+        $license = validatedLicense(requireString($data, 'license', 32));
+        $caption = optionalString($data, 'caption', 10000);
+        $creator = optionalString($data, 'creator', 255);
+        $credit = optionalString($data, 'credit', 512);
+        $lat = optionalFloat($data, 'lat', -90, 90);
+        $lon = optionalFloat($data, 'lon', -180, 180);
+        $entryId = $this->associationId($projectId, 'entries', $data['entry_id'] ?? null);
+        $placeId = $this->associationId($projectId, 'place_results', $data['place_result_id'] ?? null);
+        $featuredId = $this->associationId($projectId, 'featured_objects', $data['featured_object_id'] ?? null);
+
+        $commonsFile = $photo['commons_file'];
+        $sourceUrl = $photo['source_url'];
+        if ($photo['source_type'] === 'commons' && array_key_exists('commons_file', $data)) {
+            $commonsFile = normalizeCommonsFile(requireString($data, 'commons_file', 512));
+            $sourceUrl = commonsPageUrl($commonsFile);
+        }
+        if ($photo['source_type'] === 'url' && array_key_exists('source_url', $data)) {
+            $sourceUrl = validatedHttpUrl(requireString($data, 'source_url', 2048));
+        }
+
+        $stmt = $this->pdo->prepare(
+            'UPDATE photos SET
+                entry_id = :entry_id,
+                place_result_id = :place_id,
+                featured_object_id = :featured_id,
+                commons_file = :commons_file,
+                source_url = :source_url,
+                caption = :caption,
+                creator = :creator,
+                credit = :credit,
+                lat = :lat,
+                lon = :lon,
+                license = :license,
+                sort_order = :sort_order,
+                updated_at = :updated_at
+             WHERE id = :id AND project_id = :project_id'
+        );
+        $stmt->execute([
+            'entry_id' => $entryId,
+            'place_id' => $placeId,
+            'featured_id' => $featuredId,
+            'commons_file' => $commonsFile,
+            'source_url' => $sourceUrl,
+            'caption' => $caption,
+            'creator' => $creator,
+            'credit' => $credit,
+            'lat' => $lat,
+            'lon' => $lon,
+            'license' => $license,
+            'sort_order' => (int)($data['sort_order'] ?? 0),
+            'updated_at' => utcNow(),
+            'id' => $photoId,
+            'project_id' => $projectId,
+        ]);
+    }
+
+    public function delete(int $projectId, int $photoId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT filename, thumbnail_filename FROM photos WHERE id = :id AND project_id = :project_id'
+        );
+        $stmt->execute(['id' => $photoId, 'project_id' => $projectId]);
+        $photo = $stmt->fetch();
+        if (!$photo) {
+            throw new RuntimeException('Photo not found');
+        }
+
+        $this->pdo->prepare('DELETE FROM photos WHERE id = :id AND project_id = :project_id')
+            ->execute(['id' => $photoId, 'project_id' => $projectId]);
+        $this->unlinkStored($photo['filename'] ?? null);
+        $this->unlinkStored($photo['thumbnail_filename'] ?? null);
+    }
+
+    public function serve(string $publicId, int $photoId, string $size): never
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT ph.filename, ph.thumbnail_filename
+             FROM photos ph
+             JOIN projects p ON p.id = ph.project_id
+             WHERE ph.id = :id AND p.public_id = :public_id AND ph.source_type = "upload"'
+        );
+        $stmt->execute(['id' => $photoId, 'public_id' => $publicId]);
+        $photo = $stmt->fetch();
+        if (!$photo) {
+            http_response_code(404);
+            exit;
+        }
+
+        $name = $size === 'thumb' ? $photo['thumbnail_filename'] : $photo['filename'];
+        if (!is_string($name) || $name === '' || basename($name) !== $name) {
+            http_response_code(404);
+            exit;
+        }
+        $path = $this->uploadDir . DIRECTORY_SEPARATOR . $name;
+        if (!is_file($path)) {
+            http_response_code(404);
+            exit;
+        }
+
+        header('Content-Type: image/webp');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: public, max-age=86400');
+        header('Content-Length: ' . filesize($path));
+        readfile($path);
+        exit;
+    }
+
+    private function associationId(int $projectId, string $table, mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        $id = (int)$value;
+        if ($id <= 0) {
+            throw new InvalidArgumentException('Invalid association id');
+        }
+        if (!in_array($table, ['entries', 'place_results', 'featured_objects'], true)) {
+            throw new LogicException('Invalid association table');
+        }
+        $stmt = $this->pdo->prepare("SELECT 1 FROM {$table} WHERE id = :id AND project_id = :project_id");
+        $stmt->execute(['id' => $id, 'project_id' => $projectId]);
+        if (!$stmt->fetchColumn()) {
+            throw new InvalidArgumentException('Associated item does not belong to this project');
+        }
+        return $id;
+    }
+
+    private function storeUploadedImage(mixed $file): array
+    {
+        if (!is_array($file) || !isset($file['tmp_name'], $file['error'], $file['size'])) {
+            throw new InvalidArgumentException('Image file is required');
+        }
+        if ((int)$file['error'] !== UPLOAD_ERR_OK) {
+            throw new InvalidArgumentException('Image upload failed');
+        }
+        if ((int)$file['size'] <= 0 || (int)$file['size'] > $this->maxUploadBytes) {
+            throw new InvalidArgumentException('Image file is too large');
+        }
+        if (!is_uploaded_file((string)$file['tmp_name'])) {
+            throw new InvalidArgumentException('Invalid uploaded file');
+        }
+        if (!function_exists('imagecreatefromstring') || !function_exists('imagewebp')) {
+            throw new RuntimeException('PHP GD with WebP support is required for image uploads');
+        }
+
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file((string)$file['tmp_name']);
+        if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'], true)) {
+            throw new InvalidArgumentException('Only JPEG, PNG and WebP images are supported');
+        }
+
+        $raw = file_get_contents((string)$file['tmp_name']);
+        $source = is_string($raw) ? @imagecreatefromstring($raw) : false;
+        if ($source === false) {
+            throw new InvalidArgumentException('Uploaded file is not a valid image');
+        }
+
+        if (!is_dir($this->uploadDir) && !mkdir($this->uploadDir, 0700, true) && !is_dir($this->uploadDir)) {
+            imagedestroy($source);
+            throw new RuntimeException('Could not create the upload directory');
+        }
+        if (!is_writable($this->uploadDir)) {
+            imagedestroy($source);
+            throw new RuntimeException('Upload directory is not writable');
+        }
+
+        $base = bin2hex(random_bytes(16));
+        $filename = $base . '.webp';
+        $thumb = $base . '-thumb.webp';
+        try {
+            $this->writeResized($source, $this->uploadDir . DIRECTORY_SEPARATOR . $filename, 1800, 88);
+            $this->writeResized($source, $this->uploadDir . DIRECTORY_SEPARATOR . $thumb, 600, 82);
+        } catch (Throwable $e) {
+            imagedestroy($source);
+            $this->unlinkStored($filename);
+            $this->unlinkStored($thumb);
+            throw $e;
+        }
+        imagedestroy($source);
+        return [$filename, $thumb];
+    }
+
+    private function writeResized(GdImage $source, string $path, int $maxSide, int $quality): void
+    {
+        $width = imagesx($source);
+        $height = imagesy($source);
+        $scale = min(1.0, $maxSide / max($width, $height));
+        $newWidth = max(1, (int)round($width * $scale));
+        $newHeight = max(1, (int)round($height * $scale));
+        $target = imagecreatetruecolor($newWidth, $newHeight);
+        imagealphablending($target, false);
+        imagesavealpha($target, true);
+        $transparent = imagecolorallocatealpha($target, 0, 0, 0, 127);
+        imagefill($target, 0, 0, $transparent);
+        imagecopyresampled($target, $source, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+        if (!imagewebp($target, $path, $quality)) {
+            imagedestroy($target);
+            throw new RuntimeException('Could not encode image as WebP');
+        }
+        imagedestroy($target);
+        @chmod($path, 0600);
+    }
+
+    private function unlinkStored(mixed $name): void
+    {
+        if (!is_string($name) || $name === '' || basename($name) !== $name) {
+            return;
+        }
+        $path = $this->uploadDir . DIRECTORY_SEPARATOR . $name;
+        if (is_file($path)) {
+            @unlink($path);
+        }
+    }
+}
