@@ -32,9 +32,31 @@ jobs:
           node --check frontend/public/photo-exif.js
           python3 - <<'PY'
           import json
-          for path in ('frontend/public/i18n/ja.json', 'frontend/public/i18n/en.json'):
-              with open(path, encoding='utf-8') as f:
-                  json.load(f)
+          import pathlib
+          import re
+
+          dictionaries = {}
+          for lang in ('ja', 'en'):
+              path = pathlib.Path(f'frontend/public/i18n/{lang}.json')
+              dictionaries[lang] = json.loads(path.read_text(encoding='utf-8'))
+
+          used = set()
+          for path in pathlib.Path('frontend/public').glob('*.js'):
+              text = path.read_text(encoding='utf-8')
+              used.update(re.findall(r"i18n\.t\(\s*['\"]([^'\"]+)['\"]", text))
+
+          html = pathlib.Path('frontend/public/index.html').read_text(encoding='utf-8')
+          used.update(re.findall(r'data-i18n(?:-placeholder)?="([^"]+)"', html))
+
+          for lang, dictionary in dictionaries.items():
+              missing = sorted(used - set(dictionary))
+              if missing:
+                  raise SystemExit(f'{lang} i18n keys missing: {missing}')
+
+          if set(dictionaries['ja']) != set(dictionaries['en']):
+              only_ja = sorted(set(dictionaries['ja']) - set(dictionaries['en']))
+              only_en = sorted(set(dictionaries['en']) - set(dictionaries['ja']))
+              raise SystemExit(f'i18n dictionaries differ: only_ja={only_ja}, only_en={only_en}')
           PY
 
       - name: Start MySQL test environment
