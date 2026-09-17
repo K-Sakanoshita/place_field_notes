@@ -58,12 +58,32 @@ function requiresDiff(activityType) { return ['osm', 'mixed'].includes(activityT
 function formatBbox(bbox) { return bbox ? bbox.map(v => Number(v).toFixed(5)).join(', ') : ''; }
 function formValue(name) { return $('project-form').elements[name].value; }
 
+function endDateValue(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T23:59` : value;
+}
+
+function addDaysToDate(dateValue, days) {
+  const [year, month, day] = String(dateValue).slice(0, 10).split('-').map(Number);
+  const date = new Date(year, month - 1, day + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function syncDateConstraints() {
+  const form = $('project-form');
+  const start = form.elements.start_at;
+  const end = form.elements.end_at;
+  if (!start || !end) return;
+  if (!start.value) { end.removeAttribute('min'); end.removeAttribute('max'); return; }
+  end.min = start.value;
+  end.max = addDaysToDate(start.value, 6);
+}
+
 function activityInputForDiff() {
   const bbox = editorMap.getBBox();
   if (!bbox) throw new Error(i18n.t('select_bbox_help'));
   const start = formValue('start_at');
-  const end = formValue('end_at');
-  if (!start || !end || new Date(start) >= new Date(end)) throw new Error(`${i18n.t('start_label')} < ${i18n.t('end_label')}`);
+  const end = endDateValue(formValue('end_at'));
+  if (!start || !end || end <= start) throw new Error(`${i18n.t('start_label')} < ${i18n.t('end_label')}`);
   return { bbox, start_at: start, end_at: end, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' };
 }
 
