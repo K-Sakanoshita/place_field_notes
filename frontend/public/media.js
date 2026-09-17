@@ -123,7 +123,7 @@ async function initPublic(publicId) {
   try {
     const project=await api.getProject(publicId); document.title=`${project.title} - ${i18n.t('app_name')}`;
     $('public-title').textContent=project.title; $('public-description').textContent=project.description||'';
-    $('public-meta').textContent=`${i18n.t('project_period')}: ${new Date(project.start_at_local).toLocaleString()} — ${new Date(project.end_at_local).toLocaleString()} (${project.timezone})`;
+    $('public-meta').textContent=`${i18n.t('project_period')}: ${new Date(project.start_at_local).toLocaleDateString()} — ${new Date(project.end_at_local).toLocaleDateString()} (${project.timezone})`;
     $('public-base-map').textContent=`${i18n.t('base_map')}: ${project.base_map}`;
     const map=new PfnMap('public-map',styleForBaseMap(project.base_map)); await map.ready(); map.setBBox(project.bbox); map.addDiff(project.geojson); map.setPlaces(project.place_results); map.fitBbox(project.bbox);
     renderSummary($('public-summary'),project.summary); renderPublicFeatured(project.featured_objects); renderPublicPlaces(project);
@@ -136,9 +136,10 @@ async function initEditor(publicId = null) {
   $('editor-view').hidden=false; mode=publicId?'edit':'create'; editorPublicId=publicId;
   editorMap=new PfnMap('editor-map',SNAPSHOTS[SNAPSHOTS.length-1].style); await editorMap.ready();
   $('select-bbox').addEventListener('click',()=>editorMap.startBboxSelection(bbox=>{ $('bbox-text').textContent=i18n.t('bbox_selected',{bbox:formatBbox(bbox)}); invalidateDiff(); }));
-  $('preview-diff').addEventListener('click',previewDiff); $('add-entry').addEventListener('click',()=>addEntryRow()); $('add-place').addEventListener('click',()=>addPlaceRow()); $('save-project').addEventListener('click',saveProject);
+  $('preview-diff').addEventListener('click',()=>{ if($('project-form').reportValidity()) previewDiff(); }); $('add-entry').addEventListener('click',()=>addEntryRow()); $('add-place').addEventListener('click',()=>addPlaceRow()); $('save-project').addEventListener('click',()=>{ if($('project-form').reportValidity()) saveProject(); });
   $('photo-source-type').addEventListener('change',updatePhotoSourceFields); $('photo-form').addEventListener('submit',submitPhoto);
-  ['start_at','end_at'].forEach(name=>$('project-form').elements[name].addEventListener('change',invalidateDiff));
+  $('project-form').elements.start_at.addEventListener('change',()=>{invalidateDiff();syncDateConstraints();});
+  $('project-form').elements.end_at.addEventListener('change',()=>{invalidateDiff();syncDateConstraints();const end=$('project-form').elements.end_at; if(end.value&&end.max&&end.value>end.max)end.reportValidity();});
   $('activity-type').addEventListener('change',()=>{ const type=$('activity-type').value; $('preview-row').hidden=type==='wikipedia'; if(type==='wikipedia'){$('diff-section').hidden=true;currentDiff=null;} });
 
   if (!publicId) { addEntryRow(); return; }
@@ -147,7 +148,7 @@ async function initEditor(publicId = null) {
   try {
     if(token){ await api.establishEditSession(publicId,token); history.replaceState({},'',`/edit/${encodeURIComponent(publicId)}`); }
     const project=await api.getProject(publicId,true); editorProject=project;
-    const form=$('project-form'); form.elements.title.value=project.title||''; form.elements.description.value=project.description||''; form.elements.activity_type.value=project.activity_type||'osm'; form.elements.start_at.value=String(project.start_at_local).slice(0,16); form.elements.end_at.value=String(project.end_at_local).slice(0,16); form.elements.start_at.disabled=true; form.elements.end_at.disabled=true;
+    const form=$('project-form'); form.elements.title.value=project.title||''; form.elements.description.value=project.description||''; form.elements.activity_type.value=project.activity_type||'osm'; form.elements.start_at.value=String(project.start_at_local).slice(0,10); form.elements.end_at.value=String(project.end_at_local).slice(0,10); form.elements.start_at.disabled=true; form.elements.end_at.disabled=true; syncDateConstraints();
     editorMap.setBBox(project.bbox);editorMap.fitBbox(project.bbox);$('bbox-text').textContent=i18n.t('bbox_selected',{bbox:formatBbox(project.bbox)});
     populateEditorLists(project,true); renderPhotoEditor(project);
     $('diff-section').hidden=false;$('base-map-label').textContent=`${i18n.t('base_map')}: ${project.base_map}`;diffMap=new PfnMap('diff-map',styleForBaseMap(project.base_map));await diffMap.ready();diffMap.setBBox(project.bbox);diffMap.addDiff(project.geojson);diffMap.fitBbox(project.bbox);renderSummary($('diff-summary'),project.summary);
